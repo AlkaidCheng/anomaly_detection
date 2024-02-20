@@ -15,22 +15,13 @@ from keywords import (SIG_SAMPLE, BKG_SAMPLE, EXT_BKG_SAMPLE,
 from keywords import TRAIN_FEATURES, WEIGHT_FEATURES, PARAM_FEATURES
 from keywords import NUM_SHARDS, BASE_SEED
 
-from quickstats import AbstractObject
+from base_loader import BaseLoader
 
-class DataLoader(AbstractObject):
+class DataLoader(BaseLoader):
 
     ZERO_BKG_LABEL = 'QCD (zero-labeled)'
     ONE_BKG_LABEL = 'QCD (one-labeled)'
     SIG_LABEL = 'W ({decay_mode})'
-
-    @property
-    def feature_level(self):
-        return self._feature_level
-
-    @feature_level.setter
-    def feature_level(self, value:str):
-        feature_level = FeatureLevel.parse(value)
-        self._feature_level = feature_level
 
     @property
     def decay_modes(self):
@@ -42,30 +33,24 @@ class DataLoader(AbstractObject):
         assert len(decay_modes) in [1, 2]
         self._decay_modes = decay_modes
 
-    @property
-    def mass_ordering(self):
-        return self._mass_ordering
-
-    @mass_ordering.setter
-    def mass_ordering(self, value:str):
-        mass_ordering = MassOrdering.parse(value)
-        self._mass_ordering = mass_ordering
-
     def __init__(self, data_dir:str,
                  feature_level:str,
                  decay_modes:List[str],
                  split_config:Optional[Union[str, Dict]]=None,
                  mass_ordering:bool=MASS_UNORDERED,
+                 variables:Optional[str]=None,
                  weighted:bool=False,
                  verbosity:str='INFO'):
-        super().__init__(verbosity=verbosity)
+        super().__init__(feature_level=feature_level,
+                         mass_ordering=mass_ordering,
+                         variables=variables,
+                         verbosity=verbosity)
         self.data_dir = data_dir
-        self.feature_level = feature_level
         self.decay_modes = decay_modes
-        self.mass_ordering = mass_ordering
         self.weighted = weighted
         self.data_dir = data_dir
         self.set_split_config(split_config)
+        self.feature_metadata = None
 
     def generate_split_config(self):
         np.random.seed(BASE_SEED)
@@ -95,12 +80,6 @@ class DataLoader(AbstractObject):
             config = dict(config)
         self.split_config = config
 
-    def _get_weight_feature(self):
-        return WEIGHT_FEATURES[self.mass_ordering]
-
-    def _get_param_feature(self):
-        return PARAM_FEATURES[self.mass_ordering]
-
     def _suggest_batchsize(self, batchsize:Optional[int]=None):
         if batchsize is None:
             batchsize = 1024 if (self.feature_level == HIGH_LEVEL) else 128
@@ -110,31 +89,6 @@ class DataLoader(AbstractObject):
         if cache_dataset is None:
             cache_dataset = True if (self.feature_level == HIGH_LEVEL) else False
         return cache_dataset
-
-    def _get_train_features(self, model_type:ModelType):
-        model_type = ModelType.parse(model_type)
-        features = list(TRAIN_FEATURES[self.feature_level])
-        if model_type == PARAM_SUPERVISED:
-            param_feature = self._get_param_feature()
-            features.append(param_feature)
-        return features
-
-    def _get_aux_features(self, model_type:ModelType):
-        model_type = ModelType.parse(model_type)
-        features = ['label']
-        if model_type in [IDEAL_WEAKLY, SEMI_WEAKLY]:
-            return features
-        if self.weighted:
-            weight_feature = self._get_weight_feature()
-            features.append(weight_feature)
-        return features
-        
-    def _get_required_features(self, model_type:ModelType):
-        model_type = ModelType.parse(model_type)
-        train_features = self._get_train_features(model_type=model_type)
-        aux_features = self._get_aux_features(model_type=model_type)
-        features = train_features + aux_features
-        return features
 
     def _get_filter_fn(self, masses, mode:str="include", ignore_bkg:bool=False):
         import tensorflow as tf
@@ -231,8 +185,7 @@ class DataLoader(AbstractObject):
 
     def _get_all_transforms(self, model_type:ModelType,
                             custom_masses:Optional[List[float]]=None,
-                            custom_label:Optional[int]=None,
-                            variables:Optional[str]=None):
+                            custom_label:Optional[int]=None):
         import tensorflow as tf
         from aliad.interface.tensorflow.dataset import feature_selector
         
@@ -259,8 +212,8 @@ class DataLoader(AbstractObject):
                 return X
             transforms.append(modify_param_masses)
             
-        if variables is not None:
-            var_index = tf.constant([int(i) for i in variables.split(",") if i])
+        if self.variables is not None:
+            var_index = tf.constant([int(i) for i in self.variables.split(",") if i])
             def select_jet_feature(X):
                 X['jet_features'] = tf.gather(X['jet_features'], var_index, axis=1)
                 return X
@@ -288,8 +241,8 @@ class DataLoader(AbstractObject):
 
     def get_supervised_datasets(self, mass_point:Optional[List[float]]=None,
                                 split_index:int=0,
+                                seed:int=BASE_SEED,
                                 samples:Optional[List[str]]=None,
-                                variables:Optional[str]=None,
                                 batchsize:Optional[int]=None,
                                 custom_masses:Optional[List[float]]=None,
                                 include_masses:Optional[str]=None,
@@ -304,13 +257,13 @@ class DataLoader(AbstractObject):
             df = self.get_dedicated_dataset_specs(mass_point, samples=samples)
         with open(df['metadata_path'].iloc[0], 'r') as file:
             metadata = json.load(file)
+        self.feature_metadata = metadata['features']
         required_features = self._get_required_features(model_type)
         parse_tfrecord_fn = get_ndarray_tfrecord_example_parser(metadata['features'],
                                                                 keys=required_features)
         filters = self._get_all_filters(include_masses=include_masses,
                                         exclude_masses=exclude_masses)
-        transforms = self._get_all_transforms(model_type, variables=variables,
-                                              custom_masses=custom_masses)
+        transforms = self._get_all_transforms(model_type, custom_masses=custom_masses)
         batchsize = self._suggest_batchsize(batchsize)
         cache_dataset = self._suggest_cache_dataset(cache_dataset)
 
@@ -340,6 +293,7 @@ class DataLoader(AbstractObject):
             ds = apply_pipelines(ds, batch_size=batchsize,
                                  cache=cache,
                                  shuffle=shuffle,
+                                 seed=seed,
                                  prefetch=True,
                                  buffer_size=buffer_size,
                                  drop_remainder=False,
@@ -351,7 +305,6 @@ class DataLoader(AbstractObject):
     def get_dedicated_supervised_datasets(self, mass_point:List[float],
                                           split_index:int=0,
                                           samples:Optional[List[str]]=None,
-                                          variables:Optional[str]=None,
                                           custom_masses:Optional[List[float]]=None,
                                           batchsize:Optional[int]=None,
                                           cache_dataset:Optional[bool]=None):
@@ -360,21 +313,18 @@ class DataLoader(AbstractObject):
         all_ds = self.get_supervised_datasets(mass_point=mass_point,
                                               split_index=split_index,
                                               samples=samples,
-                                              variables=variables,
                                               custom_masses=custom_masses,
                                               batchsize=batchsize,
                                               cache_dataset=cache_dataset)
         return all_ds
 
     def get_param_supervised_datasets(self, split_index:int=0,
-                                      variables:Optional[str]=None,
                                       batchsize:Optional[int]=None,
                                       include_masses:Optional[str]=None,
                                       exclude_masses:Optional[str]=None,
                                       cache_dataset:Optional[bool]=None):
         all_ds = self.get_supervised_datasets(mass_point=None,
                                               split_index=split_index,
-                                              variables=variables,
                                               batchsize=batchsize,
                                               include_masses=include_masses,
                                               exclude_masses=exclude_masses,
@@ -492,8 +442,8 @@ class DataLoader(AbstractObject):
     def get_weakly_datasets(self, mass_point:List[float],
                             mu:float, alpha:float=0,
                             split_index:int=0,
+                            seed:int=BASE_SEED,
                             samples:Optional[List[str]]=None,
-                            variables:Optional[str]=None,
                             batchsize:Optional[int]=None,
                             cache_dataset:Optional[bool]=None):
         from aliad.interface.tensorflow.dataset import (get_ndarray_tfrecord_example_parser,
@@ -503,6 +453,7 @@ class DataLoader(AbstractObject):
         df = self.get_dedicated_dataset_specs(mass_point, samples=samples)
         with open(df['metadata_path'].iloc[0], 'r') as file:
             metadata = json.load(file)
+        self.feature_metadata = metadata['features']
         required_features = self._get_required_features(SEMI_WEAKLY)
         parse_tfrecord_fn = get_ndarray_tfrecord_example_parser(metadata['features'],
                                                                 keys=required_features)
@@ -516,10 +467,8 @@ class DataLoader(AbstractObject):
         samples = df['sample'].unique()
         do_mixed_signals = len(self.decay_modes) == 2
         transforms = {
-            0: self._get_all_transforms(SEMI_WEAKLY, variables=variables,
-                                        custom_label=0),
-            1: self._get_all_transforms(SEMI_WEAKLY, variables=variables,
-                                        custom_label=1)
+            0: self._get_all_transforms(SEMI_WEAKLY, custom_label=0),
+            1: self._get_all_transforms(SEMI_WEAKLY, custom_label=1)
         }
         for stage in stages:
             size_summary[stage] = {}
@@ -554,6 +503,7 @@ class DataLoader(AbstractObject):
                                  cache=cache,
                                  shuffle=shuffle,
                                  prefetch=True,
+                                 seed=seed,
                                  buffer_size=buffer_size,
                                  drop_remainder=False,
                                  reshuffle_each_iteration=False)

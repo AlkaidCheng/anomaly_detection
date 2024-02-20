@@ -6,7 +6,21 @@ import json
 
 import numpy as np
 
-
+def initial_check():
+    import tensorflow as tf
+    import aliad as ad
+    print(f'aliad version : {ad.__version__}')
+    print(f'tensorflow version  : {tf.__version__}')
+    os.system("nvidia-smi")
+    os.system("nvcc --version")
+    
+    physical_devices = tf.config.list_physical_devices('GPU')
+    try:
+        for device in physical_devices:
+            tf.config.experimental.set_memory_growth(device, True)
+    except:
+      # Invalid device or cannot modify virtual devices once initialized.
+      pass
 
 def get_model_inputs(feature_metadata, variables=None):
     from tensorflow.keras.layers import Input

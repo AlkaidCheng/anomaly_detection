@@ -1,3 +1,4 @@
+import os
 from quickstats.core import GeneralEnum, DescriptiveEnum
 
 class KeyDescriptiveEnum(DescriptiveEnum):
@@ -66,4 +67,22 @@ WEIGHT_FEATURES = {
 PARAM_FEATURES = {
     MASS_UNORDERED: 'param_masses_unordered',
     MASS_ORDERED: 'param_masses_ordered'
+}
+
+MLP_LAYERS = [(256, 'relu'),
+              (128, 'relu'),
+              (64, 'relu'),
+              (1, 'sigmoid')]
+
+# paths
+DATASET_INDEX_PATH = ("/pscratch/sd/c/chlcheng/dataset/anomaly_detection/LHC_Olympics_2020/"
+                      "LHCO_RnD/tfrecords/dataset_indices.json")
+DATASET_DIR = ("/pscratch/sd/c/chlcheng/dataset/anomaly_detection/LHC_Olympics_2020/"
+               "LHCO_RnD/tfrecords")
+BASE_OUTDIR = "/pscratch/sd/c/chlcheng/model_checkpoints/LHCO_AD_new"
+MODEL_OUTDIRS = {
+    DEDICATED_SUPERVISED : os.path.join(BASE_OUTDIR, "fully_supervised"),
+    PARAM_SUPERVISED     : os.path.join(BASE_OUTDIR, "fully_supervised"),
+    IDEAL_WEAKLY         : os.path.join(BASE_OUTDIR, "ideal_weakly"),
+    SEMI_WEAKLY          : os.path.join(BASE_OUTDIR, "semi_weakly")
 }
