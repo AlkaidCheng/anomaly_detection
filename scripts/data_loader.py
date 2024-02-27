@@ -40,10 +40,14 @@ class DataLoader(BaseLoader):
                  mass_ordering:bool=MASS_UNORDERED,
                  variables:Optional[str]=None,
                  weighted:bool=False,
+                 distributed:bool=False,
+                 strategy=None,
                  verbosity:str='INFO'):
         super().__init__(feature_level=feature_level,
                          mass_ordering=mass_ordering,
                          variables=variables,
+                         distributed=distributed,
+                         strategy=strategy,
                          verbosity=verbosity)
         self.data_dir = data_dir
         self.decay_modes = decay_modes
@@ -162,7 +166,12 @@ class DataLoader(BaseLoader):
             "dataset_path" : [],
             "sample"       : []
         }
-        dirname = os.path.join(self.data_dir, f'shuffled_{self.feature_level.key}')
+        if len(self.decay_modes) > 1:
+            raise RuntimeError('only one decay mode is allowed when loading parametric datasets')
+        decay_mode = self.decay_modes[0].key
+        feature_level = self.feature_level.key
+        dirname = os.path.join(self.data_dir,
+                               f'shuffled_{feature_level}_{decay_mode}')
         dataset_filenames = glob.glob(os.path.join(dirname, "*.tfrec"))
         if not dataset_filenames:
             raise RuntimeError(f"no dataset files found under the directory '{dirname}'")
@@ -232,12 +241,13 @@ class DataLoader(BaseLoader):
         
         return transforms
 
-    def _print_size_summary(self, size_summary:Dict):
-        df = pd.DataFrame(size_summary)
+    def _print_summary(self, summary:Dict):
+        df = pd.DataFrame(summary)
         if 'mixed' in df.index:
             df = df.drop(index=['mixed'])
         self.stdout.info('Number of events in each dataset splits:')
         self.stdout.info(df, bare=True)
+        
 
     def get_supervised_datasets(self, mass_point:Optional[List[float]]=None,
                                 split_index:int=0,
@@ -270,18 +280,19 @@ class DataLoader(BaseLoader):
         import tensorflow as tf
         stages = list(split_config)
         all_ds = {}
-        size_summary = {}
+        summary = {}
         samples = df['sample'].unique()
         for stage in stages:
-            size_summary[stage] = {}
+            summary[stage] = {}
             stage_mask = df['shard_index'].isin(split_config[stage])
             stage_df = df[stage_mask]
             total_size = 0
             for sample in samples:
                 sample_size = stage_df[stage_df['sample'] == sample]['size'].sum()
                 total_size += sample_size
-                size_summary[stage][sample] = sample_size
-            size_summary[stage]['total'] = total_size
+                summary[stage][sample] = sample_size
+            summary[stage]['total'] = total_size
+            summary[stage]['num_batch']  = total_size // batchsize
             dataset_paths = stage_df['dataset_path']
             ds = tf.data.TFRecordDataset(dataset_paths, num_parallel_reads=tf.data.AUTOTUNE)
             ds = ds.map(parse_tfrecord_fn, num_parallel_calls=tf.data.AUTOTUNE)     
@@ -290,20 +301,24 @@ class DataLoader(BaseLoader):
             shuffle = (model_type == DEDICATED_SUPERVISED) and (stage == 'train')
             buffer_size = total_size if shuffle else None
             cache = cache_dataset and (stage != 'test')
+            distribute_strategy = self.distribute_strategy if (stage != 'test') else None
             ds = apply_pipelines(ds, batch_size=batchsize,
                                  cache=cache,
                                  shuffle=shuffle,
                                  seed=seed,
                                  prefetch=True,
                                  buffer_size=buffer_size,
-                                 drop_remainder=False,
-                                 reshuffle_each_iteration=False)
+                                 drop_remainder=True,
+                                 reshuffle_each_iteration=False,
+                                 distribute_strategy=distribute_strategy)
             all_ds[stage] = ds
-        self._print_size_summary(size_summary)
+        self.summary = summary
+        self._print_summary(summary)
         return all_ds
         
     def get_dedicated_supervised_datasets(self, mass_point:List[float],
                                           split_index:int=0,
+                                          seed:int=BASE_SEED,
                                           samples:Optional[List[str]]=None,
                                           custom_masses:Optional[List[float]]=None,
                                           batchsize:Optional[int]=None,
@@ -313,6 +328,7 @@ class DataLoader(BaseLoader):
         all_ds = self.get_supervised_datasets(mass_point=mass_point,
                                               split_index=split_index,
                                               samples=samples,
+                                              seed=seed,
                                               custom_masses=custom_masses,
                                               batchsize=batchsize,
                                               cache_dataset=cache_dataset)
@@ -463,7 +479,7 @@ class DataLoader(BaseLoader):
         import tensorflow as tf
         stages = list(split_config)
         all_ds = {}
-        size_summary = {}
+        summary = {}
         samples = df['sample'].unique()
         do_mixed_signals = len(self.decay_modes) == 2
         transforms = {
@@ -471,7 +487,7 @@ class DataLoader(BaseLoader):
             1: self._get_all_transforms(SEMI_WEAKLY, custom_label=1)
         }
         for stage in stages:
-            size_summary[stage] = {}
+            summary[stage] = {}
             total_size = 0
             stage_mask = df['shard_index'].isin(split_config[stage])
             stage_df = df[stage_mask].copy()
@@ -483,7 +499,7 @@ class DataLoader(BaseLoader):
                                              num_parallel_reads=tf.data.AUTOTUNE)
                 ds = ds.map(parse_tfrecord_fn, num_parallel_calls=tf.data.AUTOTUNE)
                 for component in composition['components']:
-                    size_summary[stage][component['name']] = component['take']
+                    summary[stage][component['name']] = component['take']
                     total_size += component['take']
                     if (component['take'] == 0):
                         continue
@@ -494,21 +510,25 @@ class DataLoader(BaseLoader):
                     for transform in transforms[component['label']]:
                         ds_i = ds_i.map(transform)
                     datasets.append(ds_i)
-            size_summary[stage]['total'] = total_size
+            summary[stage]['total'] = total_size
+            summary[stage]['num_batch'] = total_size // batchsize
             ds = concatenate_datasets(datasets)
             shuffle = (stage == 'train')
             buffer_size = total_size if shuffle else None
             cache = cache_dataset and (stage != 'test')
+            distribute_strategy = self.distribute_strategy if (stage != 'test') else None
             ds = apply_pipelines(ds, batch_size=batchsize,
                                  cache=cache,
                                  shuffle=shuffle,
                                  prefetch=True,
                                  seed=seed,
                                  buffer_size=buffer_size,
-                                 drop_remainder=False,
-                                 reshuffle_each_iteration=False)
+                                 drop_remainder=True,
+                                 reshuffle_each_iteration=False,
+                                 distribute_strategy=distribute_strategy)
             all_ds[stage] = ds
-        self._print_size_summary(size_summary)
+        self.summary = summary
+        self._print_summary(summary)
         return all_ds
 
 

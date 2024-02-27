@@ -75,7 +75,9 @@ def run_semi_weakly(mass_point:str, mu:float,
                              mass_ordering=False,
                              weighted=False,
                              variables=variables,
+                             distributed=False,
                              verbosity=verbosity)
+    strategy = data_loader.distribute_strategy
     all_ds = data_loader.get_weakly_datasets([m1, m2],
                                              mu=mu,
                                              alpha=alpha,
@@ -86,7 +88,8 @@ def run_semi_weakly(mass_point:str, mu:float,
     feature_metadata = data_loader.feature_metadata
     model_loader = ModelLoader(feature_level,
                                mass_ordering=False,
-                               multi_gpu=multi_gpu,
+                               distributed=multi_gpu,
+                               strategy=strategy,
                                variables=variables)
 
     seed = 1000 * int(1 / mu) + split_index
@@ -142,6 +145,11 @@ def run_semi_weakly(mass_point:str, mu:float,
     t1 = time.time()
     stdout.info(f'Preparation time = {t1 - t0:.3f}s')
 
+    if data_loader.distributed:
+        steps = {dtype: summary['num_batch'] for dtype, summary in data_loader.summary.items()}
+    else:
+        steps = {dtype: None for dtype in data_loader.summary}
+
     y_true = None
     total_time = 0.
     
@@ -170,7 +178,9 @@ def run_semi_weakly(mass_point:str, mu:float,
             ws_model.fit(all_ds['train'],
                          validation_data=all_ds['val'],
                          epochs=config['epochs'],
-                         callbacks=callbacks)
+                         callbacks=callbacks,
+                         steps_per_epoch=steps['train'],
+                         validation_steps=steps['val'])
             stdout.info('Finished training!')
             ws_model.save(model_filename)
         # run prediction

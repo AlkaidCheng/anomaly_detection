@@ -35,11 +35,28 @@ class BaseLoader(AbstractObject):
     def __init__(self, feature_level:str,
                  mass_ordering:bool=MASS_UNORDERED,
                  variables:Optional[str]=None,
+                 distributed:bool=False,
+                 strategy=None,
                  verbosity:str='INFO'):
         super().__init__(verbosity=verbosity)
         self.feature_level = feature_level
         self.mass_ordering = mass_ordering
         self.variables = variables
+        self.distributed = distributed
+        self.set_distribute_strategy(strategy)
+
+    def set_distribute_strategy(self, strategy=None):
+        if strategy is not None:
+            self.distribute_strategy = strategy
+            return None
+        if (not self.distributed):
+            self.distribute_strategy = None
+            return None
+        import tensorflow as tf
+        strategy = tf.distribute.MirroredStrategy()
+        self.stdout.info(f"Created MirroredStrategy for distributed training")
+        self.stdout.info(f"Number of devices: {strategy.num_replicas_in_sync}")
+        self.distribute_strategy = strategy
 
     def _get_weight_feature(self):
         return WEIGHT_FEATURES[self.mass_ordering]

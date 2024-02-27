@@ -22,13 +22,15 @@ class ModelLoader(BaseLoader):
     def __init__(self, feature_level:str,
                  mass_ordering:bool=MASS_UNORDERED,
                  variables:Optional[str]=None,
-                 multi_gpu:bool=True,
+                 distributed:bool=True,
+                 strategy=None,
                  verbosity:str='INFO'):
         super().__init__(feature_level=feature_level,
                          mass_ordering=mass_ordering,
                          variables=variables,
+                         distributed=distributed,
+                         strategy=strategy,
                          verbosity=verbosity)
-        self.multi_gpu = multi_gpu
 
     def get_supervised_model_inputs(self, feature_metadata:Dict,
                                     downcast:bool=True):
@@ -156,9 +158,8 @@ class ModelLoader(BaseLoader):
 
     def _distributed_wrapper(self, fn, **kwargs):
         import tensorflow as tf
-        if self.multi_gpu:
-            strategy = tf.distribute.MirroredStrategy()
-            self.stdout.info(f"Number of devices: {strategy.num_replicas_in_sync}")
+        if self.distributed:
+            strategy = self.distribute_strategy
             with strategy.scope():
                 result = fn(**kwargs)
         else:

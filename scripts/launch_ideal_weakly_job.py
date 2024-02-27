@@ -73,7 +73,9 @@ def run_ideal_weakly(mass_point:str, mu:float,
                              mass_ordering=False,
                              weighted=False,
                              variables=variables,
+                             distributed=False,
                              verbosity=verbosity)
+    strategy = data_loader.distribute_strategy
     all_ds = data_loader.get_weakly_datasets([m1, m2],
                                              mu=mu,
                                              alpha=alpha,
@@ -85,7 +87,8 @@ def run_ideal_weakly(mass_point:str, mu:float,
     feature_metadata = data_loader.feature_metadata
     model_loader = ModelLoader(feature_level,
                                mass_ordering=False,
-                               multi_gpu=multi_gpu,
+                               distributed=multi_gpu,
+                               strategy=strategy,
                                variables=variables)
 
     model = model_loader.get_supervised_model(feature_metadata, parametric=False)
@@ -114,6 +117,11 @@ def run_ideal_weakly(mass_point:str, mu:float,
     t1 = time.time()
     stdout.info(f'Preparation time = {t1 - t0:.3f}s')
 
+    if data_loader.distributed:
+        steps = {dtype: summary['num_batch'] for dtype, summary in data_loader.summary.items()}
+    else:
+        steps = {dtype: None for dtype in data_loader.summary}
+        
     # run model training
     if os.path.exists(model_filename) and cache:
         stdout.info(f'Cached model from "{model_filename}"')
@@ -122,7 +130,9 @@ def run_ideal_weakly(mass_point:str, mu:float,
         model.fit(all_ds['train'],
                   validation_data=all_ds['val'],
                   epochs=config['epochs'],
-                  callbacks=callbacks)
+                  callbacks=callbacks,
+                  steps_per_epoch=steps['train'],
+                  validation_steps=steps['val'])
         stdout.info(f'Finished training!')
         model.save(model_filename)
     t2 = time.time()

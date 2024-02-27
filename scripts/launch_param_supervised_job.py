@@ -69,16 +69,19 @@ def run_param_supervised(high_level:bool=True,
                              mass_ordering=mass_ordering,
                              weighted=weighted,
                              variables=variables,
+                             distributed=False,
                              verbosity=verbosity)
     all_ds = data_loader.get_param_supervised_datasets(split_index=split_index,
                                                        batchsize=batchsize,
                                                        include_masses=include_masses,
                                                        exclude_masses=exclude_masses,
                                                        cache_dataset=cache_dataset)
+    strategy = data_loader.distribute_strategy
     feature_metadata = data_loader.feature_metadata
     model_loader = ModelLoader(feature_level,
                                mass_ordering=mass_ordering,
-                               multi_gpu=multi_gpu,
+                               distributed=multi_gpu,
+                               strategy=strategy,
                                variables=variables)
 
     model = model_loader.get_supervised_model(feature_metadata, parametric=True)
@@ -113,6 +116,11 @@ def run_param_supervised(high_level:bool=True,
 
     stdout.info(f'Preparation time = {t1 - t0:.3f}s')
     
+    if data_loader.distributed:
+        steps = {dtype: summary['num_batch'] for dtype, summary in data_loader.summary.items()}
+    else:
+        steps = {dtype: None for dtype in data_loader.summary}
+        
     # run model training
     if os.path.exists(model_filename) and cache:
         stdout.info(f'Cached model from "{model_filename}"')
@@ -122,7 +130,9 @@ def run_param_supervised(high_level:bool=True,
                   validation_data=all_ds['val'],
                   epochs=config['epochs'],
                   callbacks=callbacks,
-                  initial_epoch=early_stopping.initial_epoch)
+                  initial_epoch=early_stopping.initial_epoch,
+                  steps_per_epoch=steps['train'],
+                  validation_steps=steps['val'])
         if early_stopping.interrupted:
             stdout.info(f'Training interrupted!')
             return None
